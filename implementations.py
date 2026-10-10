@@ -30,6 +30,7 @@ import numpy as np
 # Helpers: loss and gradients
 # ---------------------------------------------------------------------------
 
+
 def compute_loss(y, tx, w):
     """Compute the MSE loss (with the 1/2 factor) at w.
 
@@ -130,6 +131,7 @@ def batch_iter(y, tx, batch_size, num_batches=1, shuffle=True):
 # Linear regression with gradient methods
 # ---------------------------------------------------------------------------
 
+
 def mean_squared_error_gd(y, tx, initial_w, max_iters, gamma):
     """Linear regression using gradient descent (GD).
 
@@ -171,7 +173,7 @@ def mean_squared_error_sgd(y, tx, initial_w, max_iters, gamma):
     for _ in range(max_iters):
         i = np.random.randint(len(y))
         # slicing (instead of y[i]) keeps the (1,) and (1, D) shapes
-        grad = compute_stoch_gradient(y[i:i + 1], tx[i:i + 1], w)
+        grad = compute_stoch_gradient(y[i : i + 1], tx[i : i + 1], w)
         w = w - gamma * grad
 
     return w, compute_loss(y, tx, w)
@@ -207,6 +209,7 @@ def mean_squared_error_sgd_batch(y, tx, initial_w, batch_size, max_iters, gamma)
 # ---------------------------------------------------------------------------
 # Normal equations
 # ---------------------------------------------------------------------------
+
 
 def least_squares(y, tx):
     """Least squares regression using the normal equations.
@@ -251,6 +254,7 @@ def ridge_regression(y, tx, lambda_):
 # Cross-validation
 # ---------------------------------------------------------------------------
 
+
 def build_poly(x, degree):
     """Polynomial basis functions for the input x, from degree 0 up to degree.
 
@@ -283,7 +287,7 @@ def build_k_indices(y, k_fold, seed):
     interval = num_row // k_fold
     np.random.seed(seed)
     indices = np.random.permutation(num_row)
-    return np.array([indices[k * interval:(k + 1) * interval] for k in range(k_fold)])
+    return np.array([indices[k * interval : (k + 1) * interval] for k in range(k_fold)])
 
 
 def cross_validation(y, x, k_indices, k, lambda_, degree):
@@ -338,8 +342,9 @@ def best_lambda_selection(y, x, degree, k_fold, lambdas, seed=12):
     rmse_tr, rmse_te = [], []
     for lambda_ in lambdas:
         # one (train, test) RMSE pair per fold, then average over the folds
-        errors = [cross_validation(y, x, k_indices, k, lambda_, degree)
-                  for k in range(k_fold)]
+        errors = [
+            cross_validation(y, x, k_indices, k, lambda_, degree) for k in range(k_fold)
+        ]
         rmse_tr.append(np.mean([e[0] for e in errors]))
         rmse_te.append(np.mean([e[1] for e in errors]))
 
@@ -371,7 +376,11 @@ def best_degree_selection(y, x, degrees, k_fold, lambdas, seed=1):
     for degree in degrees:
         lambda_, rmse, _, _ = best_lambda_selection(y, x, degree, k_fold, lambdas, seed)
         if rmse < best_rmse:
-            best_degree, best_lambda, best_rmse = int(degree), float(lambda_), float(rmse)
+            best_degree, best_lambda, best_rmse = (
+                int(degree),
+                float(lambda_),
+                float(rmse),
+            )
 
     return best_degree, best_lambda, best_rmse
 
@@ -379,6 +388,7 @@ def best_degree_selection(y, x, degrees, k_fold, lambdas, seed=1):
 # ---------------------------------------------------------------------------
 # Logistic regression
 # ---------------------------------------------------------------------------
+
 
 def sigmoid(t):
     """Apply the sigmoid function, without overflow for large |t|.
@@ -412,7 +422,7 @@ def calculate_logistic_loss(y, tx, w):
         The loss, as a non-negative scalar.
     """
     z = tx @ w
-    return float(np.mean(np.logaddexp(0, z) - y * z))
+    return np.mean(np.logaddexp(0, z) - y * z)
 
 
 def calculate_logistic_gradient(y, tx, w):
