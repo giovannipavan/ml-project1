@@ -7,7 +7,7 @@ __pycache__/
 *.so
 
 # dati del progetto (si scaricano da AIcrowd)
-data/*.csv
+data/
 
 # Distribution / packaging
 .Python
