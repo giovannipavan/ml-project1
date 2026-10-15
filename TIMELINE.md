@@ -36,12 +36,12 @@
 
 ## 2. Cause dei NaN ✅
 
-| gruppo | causa | n. colonne | decisione |
-|---|---|---|---|
-| 1 | Versione fisso / cellulare del questionario | ~18 | **eliminate** |
-| 2 | Intervista interrotta (`DISPCODE`=1200, 15% delle righe) | ~40 | NaN veri → **imputazione** |
-| 3 | Domande condizionali (solo se la risposta precedente è "sì") | ~45 | **0 dove è una quantità**, altrimenti categoria "non applicabile" |
-| 4 | Moduli opzionali scelti dagli stati | ~100 | da decidere (vedi sezione 4) |
+| gruppo | causa                                                        | n. colonne | decisione                                                         |
+| ------ | ------------------------------------------------------------ | ---------- | ----------------------------------------------------------------- |
+| 1      | Versione fisso / cellulare del questionario                  | ~18        | **eliminate**                                                     |
+| 2      | Intervista interrotta (`DISPCODE`=1200, 15% delle righe)     | ~40        | NaN veri → **imputazione**                                        |
+| 3      | Domande condizionali (solo se la risposta precedente è "sì") | ~45        | **0 dove è una quantità**, altrimenti categoria "non applicabile" |
+| 4      | Moduli opzionali scelti dagli stati                          | ~100       | da decidere (vedi sezione 4)                                      |
 
 Scoperte importanti:
 - [x] Il NaN è spesso **informativo**: per esempio il NaN di `DIABAGE2` vuol dire "non diabetico" (tasso di infarto 6,9% contro 22%)

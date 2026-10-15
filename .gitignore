@@ -8,6 +8,7 @@ __pycache__/
 
 # dati del progetto (si scaricano da AIcrowd)
 data/
+cache/
 
 # Distribution / packaging
 .Python
