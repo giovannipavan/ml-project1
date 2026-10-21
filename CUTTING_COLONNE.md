@@ -450,3 +450,459 @@ Ogni cella di codice ha delle `print`, così l'avanzamento si legge eseguendo il
 - Il dataset è **sbilanciato 1:10**: la metrica della competizione (F1? accuracy?) va verificata
   prima di scegliere la soglia di classificazione (con 8,8% di positivi, la soglia 0,5 non è
   necessariamente quella giusta).
+
+
+---
+
+# Parte 2 — Preprocessing colonna per colonna (21/10)
+
+Questa parte continua il documento dal punto in cui si era fermato (§6: `x_base` con **127 colonne**,
+`x_train` con **129**). Racconta **come abbiamo eliminato tutti i NaN rimasti** e **come abbiamo
+costruito la matrice che va ai modelli**, decidendo gruppo per gruppo.
+
+> **Due regole valgono per tutta questa parte:**
+> 1. ogni modifica è stata applicata **solo dopo un controllo sui dati** che la giustifica
+>    (purezza, coincidenza esatta, distribuzioni);
+> 2. le modifiche si dividono in due tipi:
+>    - **regole fisse** (non usano statistiche, es. "NaN di `BPMEDS` per chi non è iperteso → no"):
+>      si applicano **una volta**, a train e test, prima della CV;
+>    - **statistiche** (mediane, livelli del one-hot, medie, deviazioni standard): si imparano
+>      **solo sul fold di training** con `fit_prep` e si applicano identiche al resto con `transform_prep`.
+
+---
+
+## 11. TL;DR
+
+| passo | `x_base` | `x_train` | cosa è successo |
+|---|---|---|---|
+| punto di partenza (§6) | 127 | 129 | dopo il taglio di Giovanni |
+| 1a. grezze con codifica mista | 119 | 121 | tolte 8 colonne grezze (esiste la versione pulita del CDC) |
+| 1b. nominali con molte categorie | 117 | 119 | `IMFVPLAC` → binaria `IMFV_LAVORO`; tolte `EXRACT11`, `EXRACT21` |
+| 1c. `_HCVU651` | 116 | 118 | tolta: ridondante con `HLTHPLN1` + età |
+| 2. NaN strutturali | 114 | 116 | NaN di domande non poste → "no"; tolte `_CHOLCHK`, `_AGE65YR` |
+| 3. categoriche | 101 | 103 | tolte 13 copie (attività fisica, frutta/verdura, razza); one-hot con NaN come categoria |
+| 4. continue | 97 | 99 | tolti 4 totali; valori impossibili → NaN; mediana + indicatori, log, z-score |
+| 5. collinearità esatte | **95** | **97** | ricodificate `INSULIN_CAT` e artrite; tolte `SMOKE100`, `ASTHMA3` |
+| **matrice finale** | **256** | — | bias + continue + indicatori + one-hot, **rango pieno, nessun NaN** |
+
+> `x_base` / `x_train` sono le colonne **pulite** e contengono ancora NaN **apposta**: vengono
+> riempiti solo da `fit_prep` / `transform_prep`, dentro ogni fold. La matrice da 256 colonne è
+> quella che esce da `transform_prep(x_base, p)`.
+
+---
+
+## 12. Perché il NaN va quasi sempre tenuto come informazione
+
+Prima di decidere, abbiamo guardato il **tasso di infarto tra chi ha NaN** in ogni colonna
+(media del dataset: **8,8%**). Anche dove i NaN sono pochissimi, il segnale è fortissimo:
+
+| colonna | significato | NaN | infarti tra i NaN |
+|---|---|---|---|
+| `CVDSTRK3` | ha avuto un ictus | 0,2% | **31,5%** |
+| `CHCCOPD1` | BPCO / bronchite cronica | 0,5% | **23,5%** |
+| `CHCKIDNY` | malattia renale | 0,3% | **22,9%** |
+| `DIABAGE2` | anni con il diabete | 1,0% | **22,7%** |
+| `POORHLTH` | giorni in cui la salute ha impedito le attività | 1,1% | **19,5%** |
+
+Chi risponde "non so" sulla propria salute è, in media, molto più malato. Riempire questi NaN con
+la risposta più comune butterebbe via il segnale. Per questo **nessun NaN è stato riempito "alla
+cieca"**: o ha un significato noto (→ regola fissa), o diventa una **categoria a sé** (categoriche),
+o viene riempito con la mediana **più un indicatore di missing** (continue).
+
+I NaN che restano dopo la pulizia hanno 4 cause:
+1. **colonne candidate** tenute apposta (`CVDASPRN`, `DRADVISE`, solo in `x_train`);
+2. **domande condizionali** non coperte dagli zeri strutturali (→ gruppo 2);
+3. **interviste interrotte** (`DISPCODE` = 1200, ~15% delle persone): mancano interi blocchi;
+4. **"non so / rifiuta"** convertiti in NaN (es. `INCOME2`: 17,9%).
+
+---
+
+## 13. Gruppo 1 — Colonne da eliminare
+
+### 13.1 Gruppo 1a: grezze con codifica mista (8 colonne tolte)
+
+| grezza tolta | significato | codifica | versione pulita che resta |
+|---|---|---|---|
+| `ALCDAY5` | giorni con alcol | 1xx = a settimana, 2xx = al mese | `DROCDY3_` |
+| `STRENGTH` | esercizi di forza | 1xx = a settimana, 2xx = al mese | `STRFREQ_` |
+| `FRUITJU1` | succo di frutta | 1xx = al giorno, 2xx = a settimana, 3xx = al mese | `FTJUDA1_` |
+| `FRUIT1` | frutta | come sopra | `FRUTDA1_` |
+| `FVBEANS` | legumi | come sopra | `BEANDAY_` |
+| `FVGREEN` | verdura a foglia verde | come sopra | `GRENDAY_` |
+| `FVORANG` | verdura arancione | come sopra | `ORNGDAY_` |
+| `VEGETAB1` | altra verdura | come sopra | `VEGEDA1_` |
+
+**Perché:** lo stesso numero mescola frequenza e unità di misura. In `ALCDAY5`, 107 ("7 giorni a
+settimana", ~30 al mese) è **minore** di 201 ("1 giorno al mese"): un modello lineare la legge al
+contrario. Il CDC ha già convertito ogni colonna in un'unità unica.
+
+**Controllo:** per ogni coppia, la versione pulita è una **funzione esatta** della grezza
+(purezza ≥ 0,999, con il NaN contato come valore a sé) → toglierla non perde informazione.
+
+### 13.2 Gruppo 1b: nominali con molte categorie
+
+Prima di decidere abbiamo guardato il tasso di infarto per categoria, chiedendoci se la colonna
+**aggiunge** informazione rispetto a quelle che teniamo (codici verificati sul codebook BRFSS 2015).
+
+**`IMFVPLAC` (dove ha fatto il vaccino antinfluenzale) → binaria `IMFV_LAVORO`.**
+Tra i vaccinati il tasso è simile per quasi tutti i luoghi (10–14%), tranne:
+
+| luogo | n | infarti |
+|---|---|---|
+| 8 = posto di lavoro | 20.080 | **2,9%** (± 0,2) |
+| 11 = scuola | 1.063 | **3,0%** (± 1,0) |
+
+La spiegazione più probabile è l'**età e l'occupazione** (chi si vaccina al lavoro è giovane e
+occupato), in parte già in `_AGE80` e `EMPLOY1`. Invece di 11 colonne one-hot teniamo una sola
+binaria: `IMFV_LAVORO` = 1 se vaccinato al lavoro o a scuola, 0 altrimenti ("vaccinato sì/no"
+resta in `FLUSHOT6`). **Da verificare in CV.**
+
+**`EXRACT11` / `EXRACT21` (tipo della 1ª / 2ª attività fisica) → tolte.**
+76–77 categorie. Il tipo di attività è soprattutto un **indicatore indiretto dell'età**: corsa
+1,2%, jogging 2,2%, pesi e yoga 3,5% (attività da giovani) contro cyclette 12,9% e golf con il cart
+12,1% (attività da anziani). La cyclette è anche tipica della **riabilitazione cardiaca** (possibile
+effetto *post-outcome*). Il confronto decisivo, sulle stesse 220.487 persone:
+
+| colonna | categorie | spread |
+|---|---|---|
+| `EXRACT11` (tipo di attività) | 76 | 2,11 |
+| `ACTIN11_` (intensità, che teniamo) | 4 | **2,74** |
+
+L'intensità separa di più con un ventesimo delle categorie. Per `EXRACT21` vale lo stesso
+(spread 2,19), e il suo valore informativo (88 = "nessuna seconda attività") è già in `PAMIN21_` = 0.
+
+> **Nota su `ACTIN11_`**: chi fa attività "vigorosa" ha più infarti (11,7%) di chi la fa
+> "moderata" (5,6%). Interpretazione probabile: il CDC calcola l'intensità rispetto alla capacità
+> fisica della persona (esiste la variabile `FC60_`, il 60% della capacità funzionale), che cala
+> con l'età. Il codebook però **non lo documenta esplicitamente**: nel report va scritto come
+> interpretazione.
+
+### 13.3 Gruppo 1c: `_HCVU651` (copertura sanitaria 18–64 anni) → tolta
+
+- La nostra pulizia aveva trasformato il codice 9 in NaN, ma il 9 vuol dire soprattutto "over 65":
+  il NaN mescolava età e "non so" (16,3% di infarti tra i NaN = effetto dell'età).
+- Tra chi ha risposto separa pochissimo (spread 0,12).
+- **È ridondante.** Il codebook la definisce così: 1 = età 18–64 e `HLTHPLN1` = 1; 2 = età 18–64 e
+  `HLTHPLN1` = 2; 9 = età > 64 o mancante o `HLTHPLN1` non so.
+
+**Controllo:** purezza **1,0000** con `HLTHPLN1` + `_AGE65YR` (età dichiarata); 0,9896 con `_AGE80`
+(età imputata, che differisce per chi non ha dichiarato l'età).
+
+---
+
+## 14. Gruppo 2 — NaN strutturali (domande non poste)
+
+### L'idea
+Alcune domande sono poste **solo a chi ha risposto "sì" a una domanda madre**. Per chi ha risposto
+"no" alla madre, il NaN non è un dato mancante: la risposta **la conosciamo**.
+
+| persona | `BPHIGH4` (pressione alta?) | `BPMEDS` (prende farmaci?) | cosa sappiamo |
+|---|---|---|---|
+| C | 3 = no | NaN | non prende farmaci per la pressione |
+| D | NaN (intervista interrotta) | NaN | nulla: è un NaN vero |
+
+**Perché scriviamo "no" e non una nuova categoria ("3 = non iperteso"):** la nuova categoria, dopo
+il one-hot, sarebbe **identica riga per riga** a "`BPHIGH4` = no". Due colonne uguali → infinite
+soluzioni, `least_squares` fallisce ($X^TX$ non invertibile). Scrivendo "no" non nasce nessuna
+colonna doppia e l'informazione "non iperteso" resta nella madre.
+
+### Le modifiche
+
+| colonna | significato | modifica | NaN prima → dopo |
+|---|---|---|---|
+| `BPMEDS` | prende farmaci per la pressione | NaN con `BPHIGH4` ∈ {2,3,4} → **2 = no** | 59,9% → 0,3% |
+| `TOLDHI2` | gli hanno detto che ha il colesterolo alto | NaN con `BLOODCHO` = 2 (mai testato) → **2 = no** | 14,1% → 2,9% |
+| `CHOLCHK` | quanto tempo fa l'ultimo test del colesterolo | NaN con `BLOODCHO` = 2 → **4 = 5 anni o più** | 14,7% → 3,4% |
+| `_CHOLCHK` | riassunto CDC del test del colesterolo | **tolta** | — |
+| `_AGEG5YR` | età in 13 fasce di 5 anni | NaN → fascia ricavata da `_AGE80` (età imputata dal CDC) | 1,2% → 0,0% |
+| `_AGE65YR` | età in 2 fasce | **tolta** | — |
+
+- `_CHOLCHK` è costruita dal CDC da `BLOODCHO` + `CHOLCHK` (confermato dal codebook), e la sua
+  categoria "3 = mai" coincide al 100% con `BLOODCHO` = 2.
+- `_AGE65YR` è una funzione esatta di `_AGEG5YR` (in one-hot: la somma delle fasce dai 65 anni).
+- L'informazione "non ha dichiarato l'età" resta: `MAXVO2_` è NaN sulle stesse righe.
+
+### Controlli (tutti superati)
+| controllo | risultato |
+|---|---|
+| le figlie hanno risposte solo con madre = "sì"? | 0 eccezioni per `BPMEDS`, `TOLDHI2`, `CHOLCHK` |
+| valori di `CHOLCHK` | {1, 2, 3, 4} |
+| `_CHOLCHK` = f(`BLOODCHO`, `CHOLCHK`) | purezza 1,0000 |
+| la formula delle fasce riproduce `_AGEG5YR` | accordo 1,0000 |
+| `_AGE65YR` = f(`_AGEG5YR`) | purezza 1,0000 |
+
+---
+
+## 15. Gruppo 3 — Colonne categoriche
+
+### 15.1 Controllo di purezza tra tutte le coppie
+
+Per trovare altre colonne "doppie" abbiamo calcolato la purezza tra **tutte le coppie** di colonne
+categoriche, aggiungendo una seconda condizione per non farsi ingannare dalle colonne quasi costanti
+(che hanno purezza alta con qualsiasi altra colonna):
+
+$$\text{frazione spiegata} = \frac{\text{purezza} - \text{quota della categoria più frequente}}{1 - \text{quota della categoria più frequente}} \geq 0{,}99$$
+
+Trovate 16 relazioni. Decisioni:
+
+| colonna | significato | decisione | perché |
+|---|---|---|---|
+| `_PA300R2` | raggiunge i 300 min/settimana | **tolta** | raggruppamento esatto di `_PACAT1` (purezza 1,0000) |
+| `_FRT16`, `_VEG23`, `_FRUITEX`, `_VEGETEX`, `_FRTRESP`, `_VEGRESP`, `_MISFRTN`, `_MISVEGN` | flag di servizio del CDC su frutta e verdura (risposte mancanti / implausibili) | **tolte** | descrivono la qualità dei dati, non la salute; 13 delle 16 relazioni sono tra loro (4 reciproche); spread 0–0,26 |
+| `SMOKE100` | ha fumato almeno 100 sigarette | tenuta (poi tolta al §17) | purezza 0,9990 con `_SMOKER3`, non esatta |
+
+### 15.2 One-hot, con il NaN come categoria a sé
+
+> ⚠️ **SCELTA PROVVISORIA, DA RIVEDERE.** Trattare il NaN come categoria a sé è un primo tentativo:
+> va confrontato in CV con l'alternativa (riempire con la risposta più frequente).
+
+- Ogni categorica diventa tante colonne 0/1, una per risposta; il **NaN** è una risposta in più.
+- Per ogni variabile si toglie la colonna della **risposta più frequente** (riferimento), altrimenti
+  le colonne sommano a 1 come il bias. I pesi si leggono come "differenza rispetto alla risposta
+  tipica". Riferimenti ottenuti: `GENHLTH` = 2 (salute molto buona), `CVDSTRK3` = 2 (nessun ictus),
+  `_SMOKER3` = 4 (mai fumato), `INCOME2` = 8 (≥ 75.000 $), `BPMEDS` = 2 (non prende farmaci).
+- Livelli e riferimento si imparano **sul train**; una risposta mai vista nel train diventa una riga
+  di zeri (nei dati: nessuna).
+
+### 15.3 Colonne identiche nel one-hot
+
+Cercando colonne one-hot identiche riga per riga ne abbiamo trovate 6 coppie. Decisioni:
+
+| colonne | decisione | perché |
+|---|---|---|
+| `_HISPANC`, `_PRACE1`, `_MRACE1` | **tolte**, resta solo `_RACE` | `_HISPANC` = 1 coincide con `_RACE` = 8 (ispanico); `_PRACE1=NaN` = `_MRACE1=NaN`; sono altre versioni della razza già riassunte in `_RACE`; spread 0,4–0,8; `_PRACE1` = 8 aveva solo 5 persone |
+| `_PA150R2` (raggiunge i 150 min/settimana) | **tolta** | raggruppamento di `_PACAT1` (le sue categorie 2 e 3 coincidono con le 3 e 4 di `_PACAT1`) |
+| `INSULIN_CAT`, `PAMISS1_` | lasciate in un primo momento | sistemate poi al §17 |
+
+---
+
+## 16. Gruppo 4 — Colonne continue
+
+### 16.1 Somme esatte → tolti i 4 totali
+
+| totale tolto | = somma di (restano) |
+|---|---|
+| `_FRUTSUM` (frutta totale al giorno) | `FTJUDA1_` + `FRUTDA1_` |
+| `_VEGESUM` (verdura totale al giorno) | `BEANDAY_` + `GRENDAY_` + `ORNGDAY_` + `VEGEDA1_` |
+| `PA1MIN_` (minuti totali di attività) | `PAMIN11_` + `PAMIN21_` |
+| `PA1VIGM_` (minuti vigorosi totali) | `PAVIG11_` + `PAVIG21_` |
+
+Somme esatte sul **100%** delle righe (differenza massima 0) → collinearità esatta. Togliamo i
+totali e non le parti perché il modello può ricostruire il totale dalle parti, ma non il contrario.
+Nessun'altra coppia di continue ha correlazione > 0,99.
+
+### 16.2 Valori fisicamente impossibili → NaN
+
+Valori come 54.000 minuti di attività a settimana (una settimana ha 10.080 minuti), 20 figli
+minorenni o 99 porzioni di frutta al giorno sono **errori o codici**: il valore vero non lo
+conosciamo, quindi li trattiamo come mancanti (poi mediana + indicatore).
+
+| colonne | limite oltre cui → NaN |
+|---|---|
+| `CHILDREN` (figli in casa) | > 15 |
+| `AVEDRNK2` (drink nei giorni in cui beve), `DRNK3GE5` (binge in 30 gg) | > 30 |
+| `MAXDRNKS` (massimo drink in un'occasione) | > 40 |
+| `_DRNKWEK` (drink a settimana × 100) | > 14.000 (più di 20 al giorno) |
+| `FTJUDA1_`, `FRUTDA1_` (succo, frutta al giorno) | > 16 (soglia del CDC per `_FRT16`) |
+| `BEANDAY_`, `GRENDAY_`, `ORNGDAY_`, `VEGEDA1_` | > 23 (soglia del CDC per `_VEG23`) |
+| `PAFREQ1_`, `PAFREQ2_`, `STRFREQ_` (volte a settimana) | > 28 |
+| minuti a settimana (`_MINAC*`, `PAMIN*`, `PAVIG*`) | > 10.080 |
+| `DIABAGE2` (anni con il diabete) | < 0 o > età (nessun caso) |
+
+Riguardano al massimo lo **0,09%** delle persone per colonna. Il codebook conferma due casi:
+- per `PAFREQ*` e `STRFREQ_`, **99000 = "non so / rifiuta"**: nel dataset del corso questi valori
+  sono già divisi per 1000, quindi il codice è diventato **99** e non era stato riconosciuto;
+- `AVEDRNK2` e `MAXDRNKS` ammettono valori 1–76: il 76 è il tetto del questionario.
+
+> Si è scelto NaN invece del taglio al 99,9° percentile perché è più onesto ("i valori
+> fisicamente impossibili sono trattati come mancanti") e perché l'indicatore di missing può
+> catturare un eventuale profilo particolare di chi dà risposte assurde.
+
+### 16.3 Mediana + indicatore di missing
+
+- NaN → **mediana del train** (non la media: molti zeri e code lunghe).
+- Si aggiunge un **indicatore** 0/1 "era NaN", così il modello impara da solo quanto conta non
+  aver risposto.
+- Un indicatore **per ogni gruppo di colonne con NaN esattamente nelle stesse righe** (colonne
+  identiche → un solo indicatore). Sul test, l'indicatore vale 1 se **almeno una** colonna del gruppo
+  è NaN. I gruppi si decidono sul train, quindi train e test hanno sempre le stesse colonne.
+
+**Risultato:** quasi ogni colonna ha un pattern proprio (36 indicatori, solo `AVEDRNK2` e
+`_DRNKWEK` mancano esattamente insieme), perché i "non so" delle singole domande si sommano alle
+interviste interrotte. Con la somiglianza di Jaccard (persone con NaN in entrambe / persone con NaN
+in almeno una) si vede che:
+- `PHYSHLTH`, `MENTHLTH`, `POORHLTH`, `DIABAGE2`, `CHILDREN`, `MAXVO2_`, `HTM4` hanno NaN "propri"
+  (somiglianza ≤ 0,15 con tutte le altre) e sono i più informativi;
+- dentro i blocchi attività fisica, alcol, frutta, verdura e peso/BMI la somiglianza è 0,7–0,97.
+
+**Decisione:** teniamo gli indicatori per pattern esatto. *Alternativa da provare se
+`least_squares` desse pesi instabili:* raggruppare con Jaccard ≥ 0,8 (14 indicatori invece di 36).
+
+### 16.4 Logaritmo per le code lunghe
+
+Nei blocchi alcol, frutta/verdura e attività fisica l'asimmetria va da 8 a 66: pochi valori molto
+grandi ma **veri** "tirano" i pesi. `log(1 + x)` comprime la coda senza togliere informazione:
+
+| minuti di attività | 0 | 105 | 2.100 |
+|---|---|---|---|
+| log(1 + x) | 0 | 4,7 | 7,7 |
+
+Colonne in log (21): `AVEDRNK2`, `DRNK3GE5`, `MAXDRNKS`, `_DRNKWEK`, le 6 di frutta/verdura,
+`PADUR1_`, `PADUR2_`, `PAFREQ1_`, `PAFREQ2_`, `STRFREQ_`, `_MINAC11`, `_MINAC21`, `PAMIN11_`,
+`PAMIN21_`, `PAVIG11_`, `PAVIG21_`. Età, altezza, peso, BMI, giorni (0–30), intensità e `MAXVO2_`
+non ne hanno bisogno. **Scelta da verificare in CV** (`USA_LOG = True / False`).
+
+### 16.5 Standardizzazione
+
+$(x - \text{media}) / \text{dev. std}$ con le statistiche **del train**. Serve:
+- alla **discesa del gradiente**: lo stesso `gamma` deve andare bene per tutte le colonne;
+- alla **regolarizzazione**: $\lambda\|w\|^2$ altrimenti dipenderebbe dalle unità di misura.
+
+(Per `least_squares` in forma chiusa non cambia le predizioni.)
+
+---
+
+## 17. Matrice finale e collinearità esatte
+
+### 17.1 Il controllo del rango
+
+Messe insieme le continue e le categoriche, abbiamo calcolato gli autovalori di $X^TX$ (normalizzata):
+un autovalore nullo indica una combinazione di colonne che vale sempre zero, cioè una collinearità
+esatta. Primo risultato: **rango 258 su 275**, cioè **17 collinearità esatte**, di cui molte
+invisibili ai controlli a coppie perché coinvolgono più colonne o colonne di blocchi diversi.
+
+| # | dipendenza | n. | soluzione |
+|---|---|---|---|
+| A | `PA1MIN_`, `PA1VIGM_` somme delle parti | 2 | tolti i totali (§16.1) |
+| B | "= NaN" di una categorica identica all'indicatore di una continua (es. `DRNKANY5=NaN` = `NaN[DROCDY3_]`, `_BMI5CAT=NaN` = `NaN[_BMI5]`) | 7 | eliminazione automatica delle colonne identiche |
+| C | `PAMISS1_=NaN` = `EXERANY2=NaN` | 1 | come B |
+| D | `INSULIN_CAT` con `DIABETE3` | 2 | ricodifica (sotto) |
+| E | `SMOKE100` con `_SMOKER3` | 1 | `SMOKE100` tolta |
+| F | artrite: `HAVARTH3` con `_LMTACT1`, `_LMTWRK1`, `_LMTSCL1` | 3 | ricodifica (sotto) |
+| G | asma: `ASTHMA3` con `_ASTHMS1` | 1 | `ASTHMA3` tolta |
+
+### 17.2 Le correzioni
+
+**D. `INSULIN_CAT`.** La categoria 2 ("ignoto") coincide con `DIABETE3` mancante e le categorie
+1 + 3 + 4 insieme con `DIABETE3` = 1. Uniamo 0, 1 e 2 in **0 = "non risulta che usi insulina"**:
+restano 0 / 3 = diabetico con insulina / 4 = diabetico senza insulina. Lo stato del diabete resta in
+`DIABETE3`, `INSULIN_CAT` dice l'effetto **in più** dell'insulina (stessa logica del gruppo 2).
+
+**E. `SMOKE100` tolta.** Nel one-hot le ~330 eccezioni (`SMOKE100` = sì, `_SMOKER3` mancante) sono
+compensate esattamente dalla colonna "`_SMOKER3` = NaN":
+`SMOKE100=1` = `_SMOKER3=1` + `=2` + `=3` + (`_SMOKER3=NaN` − `SMOKE100=NaN`).
+Tutta la sua informazione è in `_SMOKER3`.
+
+**F. Artrite.** In `_LMTACT1`, `_LMTWRK1` (1 limitato, 2 non limitato, **3 = non ha l'artrite**) e
+`_LMTSCL1` (1 molto, 2 un po', 3 per niente, **4 = non ha l'artrite**) la categoria "non ha
+l'artrite" coincide con `HAVARTH3` = 2 (290.621 persone, anche nel codebook). Come per `BPMEDS`, per
+chi non ha l'artrite la risposta implicita è "**non lo limita**": 3 → 2 e 4 → 3.
+
+**G. `ASTHMA3` tolta.** Il codebook definisce `_ASTHMS1` (1 attuale, 2 passata, 3 mai) da `ASTHMA3`:
+"mai" = `ASTHMA3` = 2. `_ASTHMS1` contiene tutto e in più distingue attuale da passata.
+
+**B + C. Eliminazione automatica.** `fit_prep` costruisce la matrice, trova sul train le colonne
+**identiche** (impronta casuale + verifica esatta) e ne tiene una per gruppo, con priorità
+bias → continue → categoriche → indicatori; toglie anche le colonne **costanti** (utile nei fold
+della CV, se una categoria rara manca). Tolte 3 colonne: `NaN[_BMI5]`, `NaN[DROCDY3_]`,
+`PAMISS1_=NaN`. Le altre coppie del punto B erano sparite togliendo i totali o erano diventate
+non identiche dopo i valori impossibili → NaN.
+
+### 17.3 Risultato finale
+
+| | |
+|---|---|
+| matrice finale | train (328.135, **256**), test (109.379, **256**) |
+| NaN | **nessuno** |
+| rango di $X^TX$ | **256 su 256 (pieno)** → `least_squares` ha soluzione unica |
+| numero di condizionamento | **7,1 × 10⁴** (buono; problematico sopra 10¹⁰) |
+| quasi-collinearità più forte | `_RFBING5=NaN` ~ `NaN[DRNK3GE5]` (differiscono per ~20 persone): non blocca nulla |
+
+---
+
+## 18. Verifiche sul codebook e correzioni alla Parte 1
+
+Il codebook BRFSS 2015 ha confermato i codici usati in questa parte (`IMFVPLAC` 8 = lavoro e
+11 = scuola, i codici di `EXRACT11/21`, la definizione di `_HCVU651`, `_CHOLCHK`, `_ASTHMS1`, la
+categoria "non ha l'artrite" delle `_LMT`, le domande condizionali `BPMEDS` e `CHOLCHK`).
+
+**Correzioni alla Parte 1:**
+- **`DRADVISE` non riguarda l'aspirina**: è "un medico le ha consigliato di **ridurre il sale**"
+  (modulo *Sodium or Salt-Related Behavior*). Il ragionamento "proxy post-outcome" resta plausibile
+  (la riduzione del sale si consiglia a cardiopatici e ipertesi), ma la descrizione va corretta.
+- **`SMOKE100` / `_SMOKER3`, `_CHOLCHK`, `ASTHMA3` / `_ASTHMS1`** erano indicate in §5.2 come
+  "parentele, non copie": il controllo del rango ha mostrato che dopo il one-hot sono collinearità
+  esatte, e sono state tolte o ricodificate.
+- **`_HCVU651`**: tolta (§13.3), quindi il problema del 9 = "over 65" non si pone più.
+
+**Unità di misura nel dataset del corso.** Nel codebook molte colonne hanno decimali impliciti, ma
+nei nostri dati **alcune sono già convertite e altre no**:
+
+| già in unità reali | ancora × 100 |
+|---|---|
+| `HTM4` (m), `WTKG3` (kg), `_BMI5`, `MAXVO2_`, `METVL11_/21_`, frutta e verdura (volte al giorno), `PAFREQ*`, `STRFREQ_` (volte a settimana) | `DROCDY3_` (100 = una volta al giorno), `_DRNKWEK` (2.800 = 28 drink a settimana) |
+
+Per il modello non cambia nulla (la standardizzazione toglie la scala); serve per leggere i valori
+e i limiti del §16.2.
+
+---
+
+## 19. Decisioni aperte (da misurare in CV)
+
+| # | scelta | varianti da confrontare |
+|---|---|---|
+| 1 | ⚠️ **NaN nelle categoriche** | categoria a sé (attuale) vs moda |
+| 2 | **logaritmo** sulle code lunghe | `USA_LOG = True` (attuale) vs `False` |
+| 3 | **indicatori di missing** | per pattern esatto (attuale) vs Jaccard ≥ 0,8 vs nessun indicatore |
+| 4 | `IMFV_LAVORO` | con vs senza |
+| 5 | `CVDASPRN` / `DRADVISE` | `x_base` (senza) vs `x_train` (con) |
+| 6 | `USENOW3` (tabacco da masticare, quasi costante) | con vs senza |
+| 7 | coppie "grana diversa" (`_BMI5`/`_BMI5CAT`, `_AGE80`/`_AGEG5YR`) | entrambe vs una sola |
+| 8 | soglia di classificazione (classi 1:10) | da ottimizzare per la metrica della competizione |
+
+Criterio (come in §8): una variante vince solo se la differenza **supera la deviazione standard
+tra i fold**; altrimenti si sceglie la più semplice.
+
+---
+
+## 20. Come riprodurre — ordine delle celle (notebook di Mario)
+
+Dopo le celle che portano al punto di Giovanni (§9), in quest'ordine:
+
+| # | blocco | tipo |
+|---|---|---|
+| 1 | Gruppo 1a: controllo grezza → pulita e rimozione | regola fissa |
+| 2 | Gruppo 1b: tassi per categoria (solo controllo) | controllo |
+| 3 | Gruppo 1b: `IMFV_LAVORO`, tolte `EXRACT11/21` | regola fissa |
+| 4 | Gruppo 1c: controllo e rimozione di `_HCVU651` | regola fissa |
+| 5 | Gruppo 2: NaN strutturali, tolte `_CHOLCHK`, `_AGE65YR` | regola fissa |
+| 6 | Gruppo 3A: purezza tra tutte le coppie (solo controllo; definisce `CONTINUE`) | controllo |
+| 7 | Gruppo 3A: rimozione di `_PA300R2` e delle 8 colonne di servizio | regola fissa |
+| 8 | Gruppo 3B: `fit_categoriche` / `transform_categoriche` | funzioni |
+| 9 | Gruppo 3: rimozione di razza (`_HISPANC`, `_PRACE1`, `_MRACE1`) e `_PA150R2` | regola fissa |
+| 10 | Gruppo 4: controlli P3/P4, Jaccard, limiti fisici (definisce `LIMITI`) | controllo |
+| 11 | **Gruppo 4 definitivo**: totali, impossibili → NaN, `fit_continue` / `transform_continue` | regola fissa + funzioni |
+| 12 | Collinearità esatte D, E, F, G | regola fissa |
+| 13 | Matrice finale: `fit_prep` / `transform_prep` + controllo del rango | funzioni + controllo |
+
+> ⚠️ Le versioni precedenti di `fit_continue` (senza logaritmo) vanno **cancellate**: se eseguite
+> dopo la 11, la sovrascrivono. Le celle di "regola fissa" modificano `x_base` in place: in caso di
+> dubbi, *Restart & Run All*.
+
+**Uso nella cross-validation:**
+
+```python
+for tr, va in folds:
+    p = fit_prep(x_base[tr], cols_base)        # statistiche SOLO dal fold di training
+    X_tr = transform_prep(x_base[tr], p)       # senza NaN
+    X_va = transform_prep(x_base[va], p)
+    # ... addestramento e valutazione
+
+# submission finale
+p = fit_prep(x_base, cols_base)
+X_train_final = transform_prep(x_base, p)
+X_test_final  = transform_prep(x_base_test, p)
+```
+
+**Prossimi passi:** `implementations.py` (6 funzioni richieste), cross-validation a 5 fold
+stratificata con le ablation del §19, scelta della soglia, report.
