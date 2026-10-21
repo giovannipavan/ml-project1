@@ -183,3 +183,138 @@ def clean(x_train, x_test, cols, verbose=False):
     codes = find_special_codes(x_train, cols)
     return (special_codes_to_nan(x_train, cols, codes, verbose),
             special_codes_to_nan(x_test, cols, codes))
+
+
+def informativita_colonne(x, y, names, max_cat=20, n_bin=10, top=None):
+    """
+    x: array 2D (con NaN), y: target in {-1, 1}, names: nomi colonne.
+    Per ogni colonna calcola:
+      pct_nan    : % di NaN
+      rate_nan   : % di infarti tra i NaN
+      rate_val   : % di infarti tra chi ha risposto
+      info_nan   : |rate_nan - rate_val|  (il NaN è informativo?)
+      spread     : quanto cambia il tasso di infarto tra i valori (i valori sono informativi?)
+      pos_nan, pos_val: n. di infarti nei due gruppi (per capire se è rumore)
+    """
+    y01 = (y == 1).astype(float)
+    righe = []
+
+    for j, name in enumerate(names):
+        col = x[:, j]
+        nan_mask = np.isnan(col)
+        n_nan = nan_mask.sum()
+        n_val = len(col) - n_nan
+        if n_val == 0:
+            continue
+
+        # 1) informazione del NaN
+        rate_val = y01[~nan_mask].mean()
+        rate_nan = y01[nan_mask].mean() if n_nan > 0 else np.nan
+        info_nan = abs(rate_nan - rate_val) if n_nan > 0 else 0.0
+
+        # 2) informazione dei valori, solo tra chi ha risposto
+        v = col[~nan_mask]
+        yv = y01[~nan_mask]
+        if len(np.unique(v)) > max_cat:
+            # colonna continua: la spezzo in n_bin gruppi di uguale numerosità
+            bordi = np.unique(np.quantile(v, np.linspace(0, 1, n_bin + 1)[1:-1]))
+            gruppi = np.searchsorted(bordi, v, side="right")
+        else:
+            _, gruppi = np.unique(v, return_inverse=True)
+
+        n_g = np.bincount(gruppi)
+        pos_g = np.bincount(gruppi, weights=yv)
+        ok = n_g > 0
+        rate_g = pos_g[ok] / n_g[ok]
+        spread = np.sum(n_g[ok] / n_val * np.abs(rate_g - rate_val))
+
+        righe.append((name, 100 * n_nan / len(col), 100 * rate_nan, 100 * rate_val,
+                      100 * info_nan, 100 * spread,
+                      int(y01[nan_mask].sum()), int(yv.sum())))
+
+    righe.sort(key=lambda r: max(r[4], r[5]), reverse=True)
+    if top:
+        righe = righe[:top]
+
+    print(f"{'colonna':<12}{'%NaN':>7}{'rate_nan':>10}{'rate_val':>10}"
+          f"{'info_nan':>10}{'spread':>8}{'pos_nan':>9}{'pos_val':>9}")
+    for r in righe:
+        print(f"{r[0]:<12}{r[1]:7.1f}{r[2]:10.1f}{r[3]:10.1f}{r[4]:10.1f}{r[5]:8.1f}{r[6]:9d}{r[7]:9d}")
+    return righe
+
+
+def identify_columns_to_drop(X_train, column_names, threshold):
+    """
+    Restituisce i nomi delle colonne con proporzione di NaN sopra threshold.
+
+    Parametri:
+        X_train (np.ndarray): dati di training (già puliti con clean()).
+        column_names (list): nomi delle colonne, nello stesso ordine di X_train.
+        threshold (float): frazione tra 0 e 1 (es. 0.6 = 60% di NaN).
+    Restituisce:
+        list: nomi delle colonne da rimuovere.
+    """
+    assert X_train.shape[1] == len(column_names), "colonne e nomi non coincidono"
+
+    nan_proportion = np.isnan(X_train).mean(axis=0)       # un valore tra 0 e 1 per colonna
+    idx = np.where(nan_proportion > threshold)[0]         # indici delle colonne sopra soglia
+    return np.array(column_names)[idx].tolist()
+
+def drop_columns(X, cols, names):
+    """
+    Restituisce (X senza le colonne indicate, lista dei nomi delle colonne rimaste).
+
+    Args:
+        X    (np.ndarray): matrice 2D (n_righe, n_colonne)
+        cols (list): nomi delle colonne, nello stesso ordine di X
+        names (list): nomi delle colonne da eliminare
+    Returns:
+        (X_new, cols_new)
+    """
+    to_remove = set(names)
+    keep = [j for j, c in enumerate(cols) if c not in to_remove]
+    return X[:, keep], [cols[j] for j in keep]
+
+
+
+def colonne_ridondanti(X, cols, min_righe=500, min_purezza=0.999):
+    """
+    Trova le coppie di colonne in cui una e' una funzione deterministica dell'altra.
+    X: array 2D (con NaN), cols: nomi delle colonne.
+    Restituisce una lista di (madre, figlia, purezza).
+    """
+    def valori(j):
+        v = X[:, j]; m = ~np.isnan(v)
+        u, c = np.unique(v[m], return_counts=True)
+        return u, c, m.sum()
+    def codici(j):
+        _, inv = np.unique(X[:, j], return_inverse=True)
+        return inv.astype(np.int64), len(np.unique(X[:, j]))
+    def purezza(a_codes, na, b_codes, nb):
+        key = a_codes * nb + b_codes
+        uniq, cnt = np.unique(key, return_counts=True)
+        a_of = uniq // nb
+        tot = np.zeros(na); np.add.at(tot, a_of, cnt)
+        mx = np.zeros(na); np.maximum.at(mx, a_of, cnt)
+        return float((mx / np.maximum(tot, 1)).min())
+
+    out = []
+    for a in range(len(cols)):
+        ua, ca, na_ = valori(a)
+        if na_ < min_righe or len(ua) < 2 or ca.min() < min_righe:
+            continue
+        for b in range(a + 1, len(cols)):
+            ub, cb, nb_ = valori(b)
+            if nb_ < min_righe or len(ub) < 2 or cb.min() < min_righe:
+                continue
+            if len(ua) > 25 or len(ub) > 25:      # continue: gestite a parte
+                continue
+            ca_codes, nca = codici(a); cb_codes, ncb = codici(b)
+            p = purezza(ca_codes, nca, cb_codes, ncb)
+            if p >= min_purezza:
+                out.append((cols[a], cols[b], p))   # figlia = b
+            else:
+                p = purezza(cb_codes, ncb, ca_codes, nca)
+                if p >= min_purezza:
+                    out.append((cols[b], cols[a], p))  # figlia = a
+    return out
