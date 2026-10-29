@@ -200,4 +200,4 @@ are 1D arrays.
 
 ## Team
 
-Mario [SURNAME], Giovanni Pavan, Matteo Barbone
+Mario Grieco, Giovanni Pavan, Matteo Barbone
