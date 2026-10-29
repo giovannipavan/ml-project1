@@ -223,3 +223,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# LaTeX build files
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.log

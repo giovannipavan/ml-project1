@@ -77,7 +77,7 @@ Expected output:
 | `notebooks/notebookmatteo.ipynb` | Step-by-step construction of the cleaning pipeline (321 → 95 columns), with every check and its output. |
 | `notebooks/Giovanni.ipynb` | Analysis of the columns: missing values, informativeness, redundant columns. |
 | `notebooks/notebookMario.ipynb` | Stratified cross-validation, evaluation metrics, threshold selection, comparison of the 6 methods, step-size tuning, interaction features. |
-| `notebooks/stats2.ipynb`, `pulizia_dataset.ipynb` | First exploratory analysis and first version of the cleaning. |
+| `pulizia_dataset.ipynb` | First version of the cleaning (superseded by `notebooks/notebookmatteo.ipynb`). |
 | `CUTTING_COLONNE.md` | Column-by-column log of every cleaning decision and its motivation. |
 | `report/` | LaTeX source and PDF of the 2-page report. |
 
